@@ -1,0 +1,91 @@
+---
+title: "Causal Inference with Double ML"
+author: "Jiajin Zheng"
+date: "2019-9-8"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale("LC_ALL","English")
+```
+
+```{r}
+#load data and construct lagged price variable
+oj <- read.csv("oj.csv")
+
+df1 <- oj
+df1$week <- df1$week+1
+
+df2 <- merge(oj, df1,
+             by=c("brand", "store", "week"))
+df2 <- df2[,-c(21:31)] #get rid of repeated variables
+
+names(df2)[4:6] <- c("logmove","feat","price") 
+names(df2)[18:20] <- c("lagged_logmove","lagged_feat","lagged_price")
+
+df2$price <- log(df2$price)
+df2$lagged_price <- log(df2$lagged_price)
+
+```
+
+```{r}
+#models for quantities and prices
+modelQ <- logmove ~ feat + lagged_logmove + lagged_price + lagged_feat + lagged_price*lagged_logmove*HHLARGE.x*HVAL150.x + AGE60.x + EDUC.x + ETHNIC.x + INCOME.x + HHLARGE.x + WORKWOM.x + HVAL150.x + SSTRDIST.x + SSTRVOL.x + CPDIST5.x + CPWVOL5.x
+
+modelP <- price ~ feat + lagged_logmove + lagged_price + lagged_feat + lagged_price*lagged_logmove*HHLARGE.x*HVAL150.x + AGE60.x + EDUC.x + ETHNIC.x + INCOME.x + HHLARGE.x + WORKWOM.x + HVAL150.x + SSTRDIST.x + SSTRVOL.x + CPDIST5.x + CPWVOL5.x
+
+```
+
+```{r}
+#splitting data into two time periods
+summary(df2$week)
+t0 <- subset(df2, week <= 131)
+t1 <- subset(df2, week > 131)
+
+#and splitting into different brands
+t1Dom <- subset(t1, brand=="dominicks")
+t1MM <- subset(t1, brand=="minute.maid")
+t1Trop <- subset(t1, brand=="tropicana")
+
+library(randomForest)
+set.seed(720)
+QDom.rf <- randomForest(modelQ, data=subset(t0, brand=="dominicks"), ntree=100, keep.forest=TRUE)
+t1Dom$pred_logmove = predict(QDom.rf, t1Dom)
+t1Dom$Qtilde <- t1Dom$logmove - t1Dom$pred_logmove
+
+#use information from t0 to predict quantities and prices in t1
+#then obtain residuals (Qtilde and Ptilde)
+#the "leftover" Q and P should be randomized
+
+QMM.rf <- randomForest(modelQ, data=subset(t0, brand=="minute.maid"), ntree=100, keep.forest=TRUE)
+t1MM$pred_logmove = predict(QMM.rf, t1MM)
+t1MM$Qtilde <- t1MM$logmove - t1MM$pred_logmove
+
+QTrop.rf <- randomForest(modelQ, data=subset(t0, brand=="tropicana"), ntree=100, keep.forest=TRUE)
+t1Trop$pred_logmove = predict(QTrop.rf, t1Trop)
+t1Trop$Qtilde <- t1Trop$logmove - t1Trop$pred_logmove
+
+PDom.rf <- randomForest(modelP, data=subset(t0, brand=="dominicks"), ntree=100, keep.forest=TRUE)
+t1Dom$pred_price = predict(PDom.rf, t1Dom)
+t1Dom$Ptilde <- t1Dom$price - t1Dom$pred_price
+
+PMM.rf <- randomForest(modelP, data=subset(t0, brand=="minute.maid"), ntree=100, keep.forest=TRUE)
+t1MM$pred_price = predict(PMM.rf, t1MM)
+t1MM$Ptilde <- t1MM$price - t1MM$pred_price
+
+PTrop.rf <- randomForest(modelP, data=subset(t0, brand=="tropicana"), ntree=100, keep.forest=TRUE)
+t1Trop$pred_price = predict(PTrop.rf, t1Trop)
+t1Trop$Ptilde <- t1Trop$price - t1Trop$pred_price
+
+#use residual prices and quantities to obtain causal estimates of price change's impact on sales
+glm(Qtilde ~ Ptilde, data = t1Dom)
+
+glm(Qtilde ~ Ptilde, data = t1MM)
+
+glm(Qtilde ~ Ptilde, data = t1Trop)
+
+```
+
+
+

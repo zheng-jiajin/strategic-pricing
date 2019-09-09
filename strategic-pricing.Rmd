@@ -1,0 +1,225 @@
+---
+title: "Strategic Pricing"
+author: "Jiajin Zheng"
+date: "2019-9-8"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+Sys.setlocale("LC_ALL","English")
+```
+
+#The data
+```{r}
+oj <- read.csv("oj.csv")
+
+#plot the price spread of the three orange juice brands
+library(ggplot2)
+ggplot(oj, aes(factor(brand), log(price))) +
+  geom_boxplot(aes(fill = factor(brand)))
+
+#plot price and quantity sold spread
+ggplot(oj, aes(logmove, log(price))) +
+  geom_point(aes(color = factor(brand)))
+
+```
+
+#Models
+```{r}
+#a simple model
+model <- lm(logmove ~ log(price)*brand*feat, data = oj)
+summary(model)
+
+#a model with the demographic variables
+model1 <- lm(logmove ~ log(price)*brand*feat + AGE60 + EDUC + ETHNIC + INCOME + HHLARGE + WORKWOM + HVAL150 + SSTRDIST + SSTRVOL + CPDIST5 + CPWVOL5, data = oj)
+summary(model1)
+#all demographic variables are significant according to the t-values
+
+#out-of-sample predictions
+library(dplyr)
+set.seed(437)
+#sample 80% of the data for the training sets
+n <- 28947*.8
+oj_train <- sample_n(oj, n)
+oj_test <- setdiff(oj, oj_train)
+
+#the two models again
+model_noDemo <- lm(logmove ~ log(price)*brand*feat, data = oj_train)
+
+model_demo <- lm(logmove ~ log(price)*brand*feat + AGE60 + EDUC + ETHNIC + INCOME + HHLARGE + WORKWOM + HVAL150 + SSTRDIST + SSTRVOL + CPDIST5 + CPWVOL5, data = oj_train)
+
+P_noDemo <- predict(model_noDemo, oj_test)
+P_demo <- predict(model_demo, oj_test)
+
+#mean squared errors of out-of-sample predictions
+MSE_noDemo <- (1/5790)*sum((oj_test$logmove-P_noDemo)^2)
+MSE_demo <- (1/5790)*sum((oj_test$logmove-P_demo)^2)
+print(MSE_noDemo)
+print(MSE_demo)
+
+```
+The model with demographic variables has a lower MSE and fits the data better.
+
+#The effects of education and household sizes on demand
+```{r}
+#EDUC: fraction of shoppers with advanced education
+#HHLARGE: fraction of households that are large
+summary(oj$EDUC)
+summary(oj$HHLARGE)
+
+#Using the coefficient estimates from model1,
+#the effect of EDUC increasing from the median 
+#to the 3rd quartile
+
+beta_ED <- coef(model1)["EDUC"]
+EDincrease <- summary(oj$EDUC)["3rd Qu."] - summary(oj$EDUC)["Median"]
+exp(beta_ED * EDincrease) #exp because quantity was logged
+
+#Similarly, with HHLARGE increasing 
+#from the median to the 3rd quartile
+beta_HH <- coef(model1)["HHLARGE"]
+HHincrease <- summary(oj$HHLARGE)["3rd Qu."] - summary(oj$HHLARGE)["Median"]
+exp(beta_HH * HHincrease)
+```
+This suggests education is more important in predicting demand. 
+But let's see what happens if we build a model with EDUC and HHLARGE interacting with log(price)
+
+```{r}
+model2 <- lm(logmove ~ log(price)*brand*feat + AGE60 + EDUC*log(price) + ETHNIC + INCOME + HHLARGE*log(price) + WORKWOM + HVAL150 + SSTRDIST + SSTRVOL + CPDIST5 + CPWVOL5, data = oj)
+
+coef(model2)["log(price):EDUC"]
+coef(model2)["log(price):HHLARGE"]
+```
+These two coefficients suggest that more highly educated people are less sensitive to prices (perhaps they care more about quality) and large families care more about prices (probably because of the large quantities they consume).
+
+```{r}
+coef(model2)["EDUC"]
+coef(model2)["HHLARGE"]
+```
+Education in general drives down demand for orange juice, but education’s negative correlation with price sensitivity was not separated from it in the first model. In other words, the negative effect of education on demand was understated, so much so that it was estimated as positive. Similarly with HHLARGE, large households overall have higher demand for orange juice, but their higher price sensitivity was not separated from HHLARGE in the first model, and its effect was underestimated.
+
+#Intertemporal substitution
+```{r}
+#construct a lagged_price variable from the week before
+df1 <- oj
+df1$week <- df1$week+1
+
+df2 <- merge(oj, df1,
+             by=c("brand", "store", "week"))
+df2 <- df2[,-c(21:31)] #get rid of repeated variables
+
+names(df2)[6] <- "price"
+names(df2)[20] <- "lagged_price"
+
+summary(lm(logmove.x ~ log(price) + log(lagged_price), data = df2))
+```
+Previous week’s price is positively correlated with this week’s sold quantity. This makes sales less attractive because this suggests that sales would boost this week’s quantity but depress next period’s performance - people might just buy more now and use later (same net quantity), resulting in revenue loss for the store.
+
+#Trees for elasticities
+```{r}
+#add other brands' prices to each row
+library(data.table)
+oj2 <- dcast(oj, store + week ~ brand, value.var="price")
+oj_merge <- merge(oj, oj2, by=c("week", "store"))
+
+oj_merge$Q <- exp(oj_merge$logmove) #add quantity
+
+#add sales-weighted price for each store-week
+library(plyr)
+swp <- ddply(oj_merge, c("store", "week"), function(oj_merge) c(swp = weighted.mean(oj_merge$price, oj_merge$Q)))
+
+oj_swp <- merge(oj_merge, swp, by=c("week", "store"))
+```
+
+```{r}
+#construct a tree
+dataToPass <- oj_swp[,c("swp","AGE60","EDUC","ETHNIC","INCOME","HHLARGE","WORKWOM","HVAL150","SSTRDIST","SSTRVOL","CPDIST5","CPWVOL5")]
+
+library(rpart)
+fit <- rpart(as.formula(swp ~ .),data=dataToPass,method="anova",cp=0.007)
+
+library(maptree)
+draw.tree(fit)
+
+#subset the data by leaf
+dataToPass$leaf = fit$where
+oj_swp$leaf <- dataToPass$leaf
+count(oj_swp$leaf)
+
+oj_leaf2 <- subset(oj_swp, leaf==2)
+oj_leaf4 <- subset(oj_swp, leaf==4)
+oj_leaf5 <- subset(oj_swp, leaf==5)
+```
+
+**own-price elasticities in each leaf**
+```{r}
+glm(logmove ~ log(price)*brand*feat, data=oj_leaf2)
+
+glm(logmove ~ log(price)*brand*feat, data=oj_leaf4)
+
+glm(logmove ~ log(price)*brand*feat, data=oj_leaf5)
+```
+Generally, own-price elasticities decrease as house values increase, with the exception of dominicks in the most expensive neighborhood (leaf 5)–the own price sensitivity of its demand is higher than the other two leaves.
+
+
+**own- and cross-price elasticities in each leaf**
+```{r}
+# HVAL150 < 0.15
+oj_leaf2_D <- subset(oj_leaf2, brand=="dominicks")
+oj_leaf2_MM <- subset(oj_leaf2, brand=="minute.maid")
+oj_leaf2_T <- subset(oj_leaf2, brand=="tropicana")
+
+leaf2_D <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(tropicana)*feat, data=oj_leaf2_D)
+leaf2_MM <- glm(logmove ~ log(price)*feat + log(dominicks)*feat + log(tropicana)*feat, data=oj_leaf2_MM)
+leaf2_T <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(dominicks)*feat, data=oj_leaf2_T)
+
+M2 = matrix(
+  c(leaf2_D$coefficients["log(price)"], leaf2_MM$coefficients["log(dominicks)"], leaf2_T$coefficients["log(dominicks)"], leaf2_D$coefficients["log(minute.maid)"], leaf2_MM$coefficients["log(price)"], leaf2_T$coefficients["log(minute.maid)"], leaf2_D$coefficients["log(tropicana)"], leaf2_MM$coefficients["log(tropicana)"], leaf2_T$coefficients["log(price)"]), nrow=3, ncol=3
+)
+colnames(M2) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+rownames(M2) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+print(M2)
+
+# 0.15 < HVAL150 < 0.71
+oj_leaf4_D <- subset(oj_leaf4, brand=="dominicks")
+oj_leaf4_MM <- subset(oj_leaf4, brand=="minute.maid")
+oj_leaf4_T <- subset(oj_leaf4, brand=="tropicana")
+
+leaf4_D <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(tropicana)*feat, data=oj_leaf4_D)
+leaf4_MM <- glm(logmove ~ log(price)*feat + log(dominicks)*feat + log(tropicana)*feat, data=oj_leaf4_MM)
+leaf4_T <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(dominicks)*feat, data=oj_leaf4_T)
+
+M4 = matrix(
+  c(leaf4_D$coefficients["log(price)"], leaf4_MM$coefficients["log(dominicks)"], leaf4_T$coefficients["log(dominicks)"], leaf4_D$coefficients["log(minute.maid)"], leaf4_MM$coefficients["log(price)"], leaf4_T$coefficients["log(minute.maid)"], leaf4_D$coefficients["log(tropicana)"], leaf4_MM$coefficients["log(tropicana)"], leaf4_T$coefficients["log(price)"]), nrow=3, ncol=3
+)
+colnames(M4) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+rownames(M4) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+print(M4)
+
+# HVAL150 > 0.71
+oj_leaf5_D <- subset(oj_leaf5, brand=="dominicks")
+oj_leaf5_MM <- subset(oj_leaf5, brand=="minute.maid")
+oj_leaf5_T <- subset(oj_leaf5, brand=="tropicana")
+
+leaf5_D <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(tropicana)*feat, data=oj_leaf5_D)
+leaf5_MM <- glm(logmove ~ log(price)*feat + log(dominicks)*feat + log(tropicana)*feat, data=oj_leaf5_MM)
+leaf5_T <- glm(logmove ~ log(price)*feat + log(minute.maid)*feat + log(dominicks)*feat, data=oj_leaf5_T)
+
+M5 = matrix(
+  c(leaf5_D$coefficients["log(price)"], leaf5_MM$coefficients["log(dominicks)"], leaf5_T$coefficients["log(dominicks)"], leaf5_D$coefficients["log(minute.maid)"], leaf5_MM$coefficients["log(price)"], leaf5_T$coefficients["log(minute.maid)"], leaf5_D$coefficients["log(tropicana)"], leaf5_MM$coefficients["log(tropicana)"], leaf5_T$coefficients["log(price)"]), nrow=3, ncol=3
+)
+colnames(M5) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+rownames(M5) <- paste(c("Dominicks", "Minute.Maid", "Tropicana"))
+print(M5)
+```
+With regard to cross-price elasticities, Dominicks customers are more sensitive to Minute Maid prices in the second leaf than in the first, but Minute Maid customers are less sensitive to Dominicks prices in the second leaf; cross-price elasticities between Minute Maid and Tropicana are higher in the second leaf than the first; cross-price elasticities between Dominicks and Minute Maid as well as between Minute Maid and Tropicana are the lowest in leaf 5.
+
+**Implications for price markups**  
+
+The markups should be smallest in the leaf with the highest own-price elasticities.
+Cross-price elasticities seem to reflect own-price elasticities–the overall trend is they decrease together.
+This implies that stores can have higher markups across brands in the least cross-price elastic leaf.
+Stores in the lowest leaf should have sales at the same time to increase overall oj sales (and not just pull customers between brands); stores in the highest leaf can have sales at different time without worrying too much about competition between brands.
+
+
