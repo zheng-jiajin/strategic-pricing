@@ -5,8 +5,8 @@ The source data ("oj.csv") is store-level sales data from Dominick's stores in t
 
 Besides the Rmd code files, HTML output files are also included for ease of viewing.
 
-**"strategic-pricing" file**
-Includes plots of the data, models and discussions of price and other variables' effect on demand/sales, intertemporal substitution, and implications for price markups. Also includes obtaining price elasticities with trees.
+**The "strategic-pricing" file** 
+includes plots of the data, models and discussions of price and other variables' effect on demand/sales, intertemporal substitution, and implications for price markups. Also includes obtaining price elasticities with trees.
 
-**"Double ML" file**
+**In the "Double ML" file**,
 I used the Double Machine Learning technique (with RandomForest) to estimate price elasticities of three brands of orange juice.
